@@ -679,7 +679,6 @@ mod tests {
             eth_call_executor_fibers: 64,
             eth_call_stats_tracker: Some(Arc::new(EthCallStatsTracker::default())),
             archive_reader: None,
-            bft_ledger_path: PathBuf::from("/monad/ledger"),
             chain_id: 1337,
             chain_state: None,
             batch_request_limit: 5,

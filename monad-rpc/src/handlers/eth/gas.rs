@@ -15,7 +15,6 @@
 
 use std::{
     ops::{Div, Sub},
-    path::Path,
     sync::Arc,
 };
 
@@ -23,9 +22,7 @@ use alloy_consensus::{Header, Transaction, TxEnvelope};
 use alloy_primitives::{Address, TxKind, U256, U64};
 use alloy_rpc_types::{FeeHistory, TransactionReceipt};
 use itertools::Itertools;
-use monad_block_persist::{BlockPersist, FileBlockPersist};
 use monad_ethcall::{CallResult, EthCallExecutor, MonadTracer, StateOverrideSet};
-use monad_node_config::{ExecutionProtocolType, SignatureCollectionType, SignatureType};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
 use monad_types::{BlockId, Hash, SeqNum};
@@ -392,13 +389,12 @@ pub struct MonadEthHistoryParams {
     reward_percentiles: Option<Vec<f64>>,
 }
 
-#[rpc(method = "eth_feeHistory", ignore = "ledger_path")]
+#[rpc(method = "eth_feeHistory")]
 #[allow(non_snake_case)]
 /// Transaction fee history
 /// Returns transaction base fee per gas and effective priority fee per gas for the requested/supported block range.
 pub async fn monad_eth_feeHistory<T: Triedb>(
     chain_state: &ChainState<T>,
-    ledger_path: &Path,
     params: MonadEthHistoryParams,
 ) -> JsonRpcResult<MonadFeeHistory> {
     trace!("monad_eth_feeHistory");
@@ -442,7 +438,7 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
     };
 
     let oldest_block = header.number.saturating_sub(block_count - 1);
-    let mut base_fee_per_gas_history = Vec::with_capacity(block_count as usize + 1);
+    let mut base_fee_per_gas_history: Vec<u128> = Vec::with_capacity(block_count as usize + 1);
     let mut gas_used_ratio_history = Vec::with_capacity(block_count as usize);
     let mut rewards = Vec::with_capacity(block_count as usize + 1);
 
@@ -496,9 +492,14 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
         rewards.push(percentile_rewards);
     }
 
+    let last_base_fee = base_fee_per_gas_history
+        .last()
+        .map(|&fee| fee as u64)
+        .unwrap_or_default();
+
     // Get the newest block after the last block in the range
     let next_block_base_fee =
-        get_next_block_base_fee(chain_state, params.newest_block, ledger_path).await?;
+        get_next_block_base_fee(chain_state, params.newest_block, last_base_fee).await?;
     base_fee_per_gas_history.push(next_block_base_fee.into());
 
     let rewards = rewards
@@ -565,24 +566,17 @@ fn calculate_fee_history_rewards(
 pub async fn get_next_block_base_fee<T>(
     chain_state: &ChainState<T>,
     latest: BlockTags,
-    ledger_path: &Path,
+    previous_base_fee: u64,
 ) -> JsonRpcResult<u64>
 where
     T: Triedb,
 {
     let latest_plus_one = match latest {
         BlockTags::Latest | BlockTags::Safe => {
-            let voted = chain_state.triedb_env.get_latest_voted_block_key();
-            match voted {
-                BlockKey::Proposed(ProposedBlockKey(_, block_id)) => {
-                    return get_proposed_head_base_fee(ledger_path, block_id);
-                }
-                _ => {
-                    return Err(JsonRpcError::internal_error(
-                        "could not fetch voted block".into(),
-                    ))
-                }
-            }
+            // Latest/Safe block is the voted block
+            // TODO: rpc does not have access to consensus headers to calculate the next block base fee.
+            // Return base fee of the previous block.
+            return Ok(previous_base_fee);
         }
         BlockTags::Number(num) => BlockTags::Number(Quantity(num.0 + 1)),
         BlockTags::Finalized => BlockTags::Latest,
@@ -594,27 +588,6 @@ where
         .map_err(|_| JsonRpcError::internal_error("could not get block data".into()))?;
 
     Ok(header.base_fee_per_gas.unwrap_or_default())
-}
-
-// Read the proposed block header's base fee from the consensus ledger.
-pub fn get_proposed_head_base_fee(ledger_path: &Path, block_id: BlockId) -> JsonRpcResult<u64> {
-    let block_persist: FileBlockPersist<
-        SignatureType,
-        SignatureCollectionType,
-        ExecutionProtocolType,
-    > = FileBlockPersist::new(ledger_path.to_path_buf());
-    let mut proposed_head = block_persist
-        .read_proposed_head_bft_header()
-        .map_err(|_| JsonRpcError::internal_error("could not get proposed head tip".into()))?;
-
-    // The proposed head's parent hash should match the block id, otherwise we need to trace back to the matching block id's parent block.
-    while proposed_head.get_parent_id() != block_id {
-        proposed_head = block_persist
-            .read_bft_header(&proposed_head.get_parent_id())
-            .map_err(|_| JsonRpcError::internal_error("could not get proposed head tip".into()))?;
-    }
-
-    Ok(proposed_head.base_fee.unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -803,7 +776,6 @@ mod tests {
         let chain_state = ChainState::new(None, mock_triedb, None);
         let res = monad_eth_feeHistory(
             &chain_state,
-            Path::new("/monad/ledger"),
             MonadEthHistoryParams {
                 block_count: Quantity(1),
                 newest_block: BlockTags::Latest,
@@ -851,7 +823,6 @@ mod tests {
         let chain_state = ChainState::new(None, mock_triedb, None);
         let res = monad_eth_feeHistory(
             &chain_state,
-            Path::new("/monad/ledger"),
             MonadEthHistoryParams {
                 block_count: Quantity(1),
                 newest_block: BlockTags::Latest,
