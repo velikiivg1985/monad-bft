@@ -52,7 +52,7 @@ sudo sysctl -p /etc/sysctl.d/99-custom-monad.conf
 
 ### Using Docker
 
-The most straightforward way to start a consensus client + an execution client + a JsonRpc server.
+The most straightforward way to start a consensus client + an execution client + a JsonRpc server .
 
 #### Requirements
 
