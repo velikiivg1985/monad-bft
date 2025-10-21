@@ -6,7 +6,7 @@ This repository contains implementation for the Monad consensus client and JsonR
 
 ## Getting Started
 
-From within the `monad-bft` root directory, initialize and update submodules.
+From within the `monad-bft` root directory, initialize and update submodules..
 
 ```sh
 git submodule update --init --recursive
